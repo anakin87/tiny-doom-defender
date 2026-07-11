@@ -1,0 +1,32 @@
+[project]
+name = "tiny-doom-defender"
+version = "0.1.0"
+description = "1.1M ModernBERT encoder playing DOOM in real-time in CPU"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "transformers",
+    "numpy",
+    "Pillow",
+    "datasets",
+    "vizdoom",
+]
+
+[project.scripts]
+create-model = "tiny_doom_defender.scripts.create_model:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.21",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
