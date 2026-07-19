@@ -14,6 +14,8 @@ dependencies = [
 
 [project.scripts]
 create-model = "tiny_doom_defender.scripts.create_model:main"
+train-sft = "tiny_doom_defender.scripts.train_sft:main"
+record-oracle = "tiny_doom_defender.scripts.record_oracle:main"
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

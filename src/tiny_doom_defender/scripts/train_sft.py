@@ -1,24 +1,21 @@
 """
 SFT the conv-stem classifier on oracle demonstrations (behavior cloning).
 
-Wraps the fresh 4-layer encoder (from create_model.py) with the conv stem + two
-heads and trains end-to-end on the recorded frames. Equal-weight sum of two
-per-axis cross-entropies; head biases init to log class priors (removes the cold-start
-majority-class attractor, so no shoot class-weighting is needed at this ~79/21 shoot
-ratio). The whole model — stem included — is trained here, so at PPO time the stem is
-already SFT-trained (not fresh).
+Builds DoomConvStemClassifier (architecture in model.py) from the --base-model
+encoder dir and trains it end-to-end. Loss is the equal-weight sum of the turn and
+shoot cross-entropies; head biases init to log class priors, which removes the
+cold-start majority-class attractor.
 
-The frame-stacking dataset lives here (`ConvStemFrameDataset`): it memory-maps
-`frames.u8` and, per index, builds the 9-channel stack [F_{t-2}, F_{t-1}, F_t] with
-episode-boundary clamping (at episode start the current frame is repeated, so no
-motion leaks between episodes). prev0/prev1 come from labels (same clamping at record
-time). Frames stay uint8; the conv stem casts + normalizes on device.
+The frame-stacking dataset (`ConvStemFrameDataset`) memory-maps `frames.u8` and,
+per index, builds the 9-channel stack [F_{t-2}, F_{t-1}, F_t] with episode-boundary
+clamping (at episode start the current frame is repeated, so no motion leaks across
+episodes). prev0/prev1 come from the label columns. Frames stay uint8; the stem
+casts + normalizes on device.
 
-Saves model.pt (full state dict incl. stem) to <output>/best and <output>/final;
-both load into ConvStemPolicy for PPO / eval via load_sft_into_policy.
+Saves the full state dict as model.pt to <output>/best and <output>/final.
 
 Usage:
-  python cnn_no_fwd/scripts/train_sft.py --data data/cnn-oracle --base-model models/doom-cnn-4L --bf16
+    train-sft --data data/cnn-oracle --base-model models/doom-cnn-4L-no-fwd --bf16
 """
 
 import argparse
@@ -46,10 +43,7 @@ class ConvStemFrameDataset(Dataset):
         frames_path = os.path.join(data_dir, "frames.u8")
         labels_path = os.path.join(data_dir, "labels.npz")
         if not (os.path.isfile(frames_path) and os.path.isfile(labels_path)):
-            raise FileNotFoundError(
-                f"{data_dir} must contain frames.u8 + labels.npz "
-                f"(produced by cnn_no_fwd/scripts/record_simple_oracle.py)"
-            )
+            raise FileNotFoundError(f"{data_dir} must contain frames.u8 + labels.npz (the recorded oracle dataset)")
 
         lab = np.load(labels_path)
         missing = [c for c in self.REQUIRED if c not in lab.files]
@@ -87,9 +81,8 @@ class ConvStemFrameDataset(Dataset):
     @staticmethod
     def _resolve(data_path):
         """Local dir -> use as-is; otherwise treat `data_path` as a HuggingFace Hub
-        dataset repo id and snapshot_download it (cached on subsequent runs). Mirrors
-        the original ASCII trainer's local-or-Hub loading. The downloaded snapshot has
-        the same frames.u8 + labels.npz layout (Path A push — no format conversion)."""
+        dataset repo id and snapshot_download it (cached on subsequent runs). The
+        snapshot has the same frames.u8 + labels.npz layout."""
         if os.path.isdir(data_path):
             return data_path
         from huggingface_hub import snapshot_download
@@ -158,11 +151,12 @@ def main():
     ap.add_argument(
         "--data",
         default="data/cnn-oracle",
-        help="Local dir with frames.u8 + labels.npz (from record_simple_oracle.py) "
-        "OR a HuggingFace Hub dataset repo id (snapshot_downloaded).",
+        help="Local dir with frames.u8 + labels.npz, OR a HuggingFace Hub dataset repo id (snapshot_downloaded).",
     )
     ap.add_argument(
-        "--base-model", default="models/doom-cnn-4L", help="Encoder dir from create_model.py (config + weights)."
+        "--base-model",
+        default="models/doom-cnn-4L-no-fwd",
+        help="Encoder dir from create_model.py (config + weights).",
     )
     ap.add_argument("--output", default="output/cnn-sft")
     ap.add_argument("--epochs", type=int, default=40)
@@ -176,12 +170,9 @@ def main():
         "--patience",
         type=int,
         default=6,
-        help="Early stop after this many consecutive evals with no "
-        "improvement in val all-accuracy (0 = disabled). Patience "
-        "in EVAL units, not epochs, so it adapts to dataset size. "
-        "At the default eval-steps this is ~4-5 epochs on a 100K set. "
-        "Note: frags (not val-acc) is the real metric, so the SFT "
-        "checkpoint need only be a good PPO prior.",
+        help="Early stop after this many consecutive evals with no improvement in val "
+        "all-accuracy (0 = disabled). Counted in EVAL units, not epochs, so it adapts to "
+        "dataset size (~4 epochs on a 100K set at the default eval-steps).",
     )
     ap.add_argument(
         "--min-delta", type=float, default=0.0, help="Minimum val all-accuracy gain to count as an improvement."
@@ -234,8 +225,7 @@ def main():
 
     # Head biases init to log(class priors): each head starts at its prior, so the
     # only loss-decreasing direction is input-conditional features. This removes the
-    # cold-start "always predict the majority class" attractor (notably on shoot) —
-    # which is why no shoot class-weighting is needed here.
+    # cold-start "always predict the majority class" attractor.
     with torch.no_grad():
         p_turn = torch.tensor(
             [dist["turn_L"], dist["turn_N"], dist["turn_R"]], dtype=torch.float32, device=device
@@ -331,10 +321,6 @@ def main():
     print(f"\nBest all : {best:.3f}\nFinal all: {final['all']:.3f}")
     save_ckpt(os.path.join(args.output, "final"))
     print(f"Saved to {args.output}/final")
-    print(
-        f"\nNext:\n  python cnn_no_fwd/scripts/train_ppo.py --base-model {args.base_model} "
-        f"--sft-checkpoint {args.output}/best --output output/cnn-ppo"
-    )
 
 
 if __name__ == "__main__":
