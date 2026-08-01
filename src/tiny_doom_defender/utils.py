@@ -30,16 +30,13 @@ def pack_obs(stack_u8, prev_actions):
     return obs
 
 
-def load_stem_config(model_dir):
-    """Conv-stem geometry the encoder was built with, from <model_dir>/stem_config.json.
+def stem_config():
+    """The conv-stem geometry, from config.py — the one runtime source.
 
-    Falls back to the config.py constants when the sidecar is absent (older model
-    dirs), so a checkpoint stays loadable without it.
+    create_model.py stamps this into <model_dir>/stem_config.json and check_stem_config
+    compares a model dir's stamp back against it, so both sides always speak of the
+    same keys.
     """
-    path = os.path.join(model_dir, "stem_config.json")
-    if os.path.isfile(path):
-        with open(path) as f:
-            return json.load(f)
     return {
         "input_resolution": [config.RES_H, config.RES_W],
         "n_frames": config.N_FRAMES,
@@ -49,3 +46,28 @@ def load_stem_config(model_dir):
         "token_grid": [config.GRID_H, config.GRID_W],
         "n_tokens": config.N_TOKENS,
     }
+
+
+def check_stem_config(model_dir):
+    """Raise if <model_dir>/stem_config.json disagrees with the config.py geometry.
+
+    config.py is what the recorder, the dataset and the env actually produce, so a model
+    stamped with a different geometry has nothing that can feed it. Compares every key
+    of stem_config() present in the stamp — including the ones ConvStem never reads
+    (it is fully convolutional, so a resolution mismatch would otherwise load cleanly
+    and merely score worse). Unstamped dirs pass unchecked.
+    """
+    path = os.path.join(model_dir, "stem_config.json")
+    if not os.path.isfile(path):
+        return
+    with open(path) as f:
+        stamped = json.load(f)
+    diff = {k: (v, stamped[k]) for k, v in stem_config().items() if k in stamped and stamped[k] != v}
+    if diff:
+        rows = "\n".join(f"  {k}: model {got}, config.py {want}" for k, (want, got) in diff.items())
+        raise ValueError(
+            f"{path} does not match the config.py geometry:\n{rows}\n"
+            "Use a model built with the current geometry, or change config.py to match this "
+            "one — but every recorded dataset and every other checkpoint is tied to config.py, "
+            "so they have to be re-made too."
+        )

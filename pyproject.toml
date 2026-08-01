@@ -10,12 +10,16 @@ dependencies = [
     "Pillow",
     "datasets",
     "vizdoom",
+    "gymnasium",
 ]
 
 [project.scripts]
 create-model = "tiny_doom_defender.scripts.create_model:main"
-train-sft = "tiny_doom_defender.scripts.train_sft:main"
 record-oracle = "tiny_doom_defender.scripts.record_oracle:main"
+train-sft = "tiny_doom_defender.scripts.train_sft:main"
+train-ppo = "tiny_doom_defender.scripts.train_ppo:main"
+select-ppo-snapshots = "tiny_doom_defender.scripts.select_ppo_snapshots:main"
+eval-model = "tiny_doom_defender.scripts.eval_model:main"
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

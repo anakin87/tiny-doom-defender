@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from transformers import AutoModel
 
 from tiny_doom_defender.config import IN_CH, N_ACTION_STATES, N_PREV
-from tiny_doom_defender.utils import load_stem_config
+from tiny_doom_defender.utils import check_stem_config
 
 # =============================================================================
 # The eye
@@ -70,15 +70,10 @@ class _StemTrunk(nn.Module):
         super().__init__()
         self.encoder = AutoModel.from_pretrained(encoder_dir)
         hidden = self.encoder.config.hidden_size
-        # Stem geometry comes from the model dir's stem_config.json (config.py as
-        # fallback), so a saved checkpoint is self-describing at inference time.
-        geom = load_stem_config(encoder_dir)
-        self.stem = ConvStem(
-            in_ch=geom["in_channels"],
-            hidden=hidden,
-            n_prev=geom["n_prev_actions"],
-            n_action_states=geom["n_action_states"],
-        )
+        # Stem geometry comes from config.py; the model dir's stem_config.json is the
+        # stamp of what this encoder was built for, and only gets checked against it.
+        check_stem_config(encoder_dir)
+        self.stem = ConvStem(hidden=hidden)
         self.attn_weight = nn.Linear(hidden, 1, bias=False)
         self.hidden_size = hidden
 

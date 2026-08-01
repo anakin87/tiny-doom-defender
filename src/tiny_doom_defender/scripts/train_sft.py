@@ -61,7 +61,8 @@ class ConvStemFrameDataset(Dataset):
         if actual != expected:
             raise ValueError(
                 f"frames.u8 size {actual} != expected {expected} "
-                f"({n} frames x {RES_H}x{RES_W}x3). Corrupt or mismatched dataset."
+                f"({n} frames x {RES_H}x{RES_W}x3). Corrupt, or recorded at a different "
+                f"config.py geometry than the current one."
             )
         self.frames = np.memmap(frames_path, dtype=np.uint8, mode="r", shape=(n, RES_H, RES_W, 3))
 

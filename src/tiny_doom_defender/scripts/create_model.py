@@ -5,9 +5,9 @@ Emits two artifacts:
   config.json + model.safetensors   the ModernBERT encoder (HF format). train_sft.py
                                      loads this as --base-model and wraps it with a
                                      freshly-initialized conv stem + heads.
-  stem_config.json                  the conv-stem geometry (resolution, frames, grid).
-                                     DoomConvStemClassifier reads it to rebuild the stem,
-                                     so the model dir is self-describing.
+  stem_config.json                  the conv-stem geometry this encoder was built for,
+                                     stamped from config.py. Building a model checks the
+                                     stamp against config.py and refuses a mismatch.
 
 The encoder's vocab is tiny on purpose: the stem feeds `inputs_embeds`, so its
 token-embedding table is never used.
@@ -22,18 +22,8 @@ import os
 
 from transformers import ModernBertConfig, ModernBertModel
 
-from tiny_doom_defender.config import (
-    GRID_H,
-    GRID_W,
-    IN_CH,
-    N_ACTION_STATES,
-    N_FRAMES,
-    N_PREV,
-    N_TOKENS,
-    RES_H,
-    RES_W,
-)
 from tiny_doom_defender.model import DoomConvStemClassifier
+from tiny_doom_defender.utils import stem_config
 
 
 def main():
@@ -110,18 +100,9 @@ def main():
     print(f"\n[2/3] Saving encoder to {args.output}...")
     os.makedirs(args.output, exist_ok=True)
     encoder.save_pretrained(args.output)
-    stem_config = {
-        "input_resolution": [RES_H, RES_W],
-        "n_frames": N_FRAMES,
-        "in_channels": IN_CH,
-        "n_prev_actions": N_PREV,
-        "n_action_states": N_ACTION_STATES,
-        "token_grid": [GRID_H, GRID_W],
-        "n_tokens": N_TOKENS,
-        "stem": "Conv2d(9->32,s2) -> ReLU -> Conv2d(32->128,s2) -> ReLU",
-    }
+    stamp = {**stem_config(), "stem": f"Conv2d(9->32,s2) -> ReLU -> Conv2d(32->{args.hidden_size},s2) -> ReLU"}
     with open(os.path.join(args.output, "stem_config.json"), "w") as f:
-        json.dump(stem_config, f, indent=2)
+        json.dump(stamp, f, indent=2)
 
     print("\n[3/3] Assembling full classifier to count params...")
     clf = DoomConvStemClassifier(args.output)
