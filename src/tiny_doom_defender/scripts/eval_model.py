@@ -10,45 +10,22 @@ Usage:
 """
 
 import argparse
-import json
 import multiprocessing as mp
-import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 
 import torch
 
 from tiny_doom_defender.config import SEED_TEST
-from tiny_doom_defender.ppo_core import (
-    DefendCenterConvStemEnv,
+from tiny_doom_defender.env import DefendCenterConvStemEnv
+from tiny_doom_defender.evaluation import (
+    DEFAULT_BASE_MODEL,
     build_policy,
-    is_policy_checkpoint,
     pick_device,
     play_episodes,
+    resolve_base_model,
     summarize,
 )
-
-DEFAULT_BASE_MODEL = "models/doom-cnn-4L-no-fwd"
-
-
-def resolve_base_model(ckpt, base_model):
-    """Which encoder dir to rebuild the architecture from.
-
-    An explicit --base-model wins. Otherwise a PPO snapshot is a bare state dict, so use
-    the encoder its run recorded in manifest.json. Nothing catches a wrong one: heads,
-    attention window and RoPE thetas change the forward pass without changing any
-    parameter shape, so a mismatched encoder loads without error.
-    """
-    if base_model is not None:
-        return base_model
-    manifest = os.path.join(os.path.dirname(os.path.abspath(ckpt)), "manifest.json")
-    if is_policy_checkpoint(ckpt) and os.path.isfile(manifest):
-        with open(manifest) as f:
-            from_run = json.load(f).get("base_model")
-        if from_run:
-            print(f"  base-model from {manifest}: {from_run}")
-            return from_run
-    return DEFAULT_BASE_MODEL
 
 
 def _worker(payload):

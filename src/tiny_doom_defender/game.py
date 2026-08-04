@@ -7,8 +7,10 @@ from PIL import Image
 from tiny_doom_defender.config import EPISODE_TIMEOUT, RES_H, RES_W
 
 
-def setup_game(scenario="defend_the_center", skill=None, episode_timeout=EPISODE_TIMEOUT, objects_info=False):
-    """Headless PLAYER-mode game rendering full-res RGB, labels buffer on."""
+def setup_game(
+    scenario="defend_the_center", skill=None, episode_timeout=EPISODE_TIMEOUT, objects_info=False, visible=False
+):
+    """PLAYER-mode game rendering full-res RGB, labels buffer on. Headless unless visible."""
     game = vizdoom.DoomGame()
     game.load_config(vizdoom.scenarios_path + f"/{scenario}.cfg")
     if skill is not None:
@@ -18,7 +20,7 @@ def setup_game(scenario="defend_the_center", skill=None, episode_timeout=EPISODE
     game.set_labels_buffer_enabled(True)  # oracle decision input ONLY (never recorded)
     if objects_info:
         game.set_objects_info_enabled(True)  # privileged side-channel, never an observation
-    game.set_window_visible(False)
+    game.set_window_visible(visible)
     game.set_render_hud(True)
     game.set_mode(vizdoom.Mode.PLAYER)
     game.clear_available_buttons()

@@ -2,8 +2,8 @@
 PPO-refine the conv-stem SFT policy on defend_the_center (vision-only).
 
 CleanRL-style PPO: GAE, clipped surrogate, advantage normalization, KL early-stop,
-two-LR AdamW. Policy and env come from ppo_core.py; rollouts are collected from
---num-envs VizDoom processes behind a spawned AsyncVectorEnv.
+two-LR AdamW. The policy comes from model.py and the env from env.py; rollouts are
+collected from --num-envs VizDoom processes behind a spawned AsyncVectorEnv.
 
 Every iteration writes a snapshot + manifest.json, so a crash keeps its progress. The
 last iterate is not necessarily the best one — pick which to keep offline with
@@ -33,7 +33,9 @@ import torch.nn as nn
 from gymnasium.vector import AutoresetMode
 
 from tiny_doom_defender.config import OBS_LEN, SEED_ROLLOUT, SEED_SELECTION
-from tiny_doom_defender.ppo_core import ConvStemPolicy, load_sft_into_policy, make_env, pick_device
+from tiny_doom_defender.env import make_env
+from tiny_doom_defender.evaluation import load_sft_into_policy, pick_device
+from tiny_doom_defender.model import ConvStemPolicy
 
 
 def amp_ctx(device, bf16):

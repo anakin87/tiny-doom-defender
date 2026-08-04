@@ -21,14 +21,8 @@ from concurrent.futures import ProcessPoolExecutor
 import torch
 
 from tiny_doom_defender.config import SEED_SELECTION
-from tiny_doom_defender.ppo_core import (
-    DefendCenterConvStemEnv,
-    build_policy,
-    fmt_summary,
-    pick_device,
-    play_episodes,
-    summarize,
-)
+from tiny_doom_defender.env import DefendCenterConvStemEnv
+from tiny_doom_defender.evaluation import build_policy, fmt_summary, pick_device, play_episodes, summarize
 
 
 def parse_iters(spec):
