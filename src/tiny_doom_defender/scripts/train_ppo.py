@@ -2,7 +2,7 @@
 PPO-refine the conv-stem SFT policy on defend_the_center (vision-only).
 
 CleanRL-style PPO: GAE, clipped surrogate, advantage normalization, KL early-stop,
-two-LR AdamW. The policy comes from model.py and the env from env.py; rollouts are
+two-LR AdamW. The policy comes from modeling_doom.py and the env from env.py; rollouts are
 collected from --num-envs VizDoom processes behind a spawned AsyncVectorEnv.
 
 Every iteration writes a snapshot + manifest.json, so a crash keeps its progress. The
@@ -32,10 +32,10 @@ import torch
 import torch.nn as nn
 from gymnasium.vector import AutoresetMode
 
-from tiny_doom_defender.config import OBS_LEN, SEED_ROLLOUT, SEED_SELECTION
+from tiny_doom_defender.constants import OBS_LEN, SEED_ROLLOUT, SEED_SELECTION
 from tiny_doom_defender.env import make_env
-from tiny_doom_defender.evaluation import load_sft_into_policy, pick_device
-from tiny_doom_defender.model import ConvStemPolicy
+from tiny_doom_defender.modeling_doom import DoomConvStemPolicy
+from tiny_doom_defender.utils import check_pipeline_config, pick_device
 
 
 def amp_ctx(device, bf16):
@@ -46,12 +46,11 @@ def amp_ctx(device, bf16):
 
 
 def write_manifest(args, snapshots):
-    """Snapshot index + run provenance. base_model is the field read back: the selector
-    and eval_model rebuild the architecture from it."""
+    """Run provenance (hyperparameters + snapshot index). Informational only; the
+    selector discovers snapshots by globbing the output dir."""
     with open(os.path.join(args.output, "manifest.json"), "w") as f:
         json.dump(
             {
-                "base_model": args.base_model,
                 "sft_checkpoint": args.sft_checkpoint,
                 "unfreeze_blocks": args.unfreeze_blocks,
                 "train_stem": args.train_stem,
@@ -65,10 +64,9 @@ def write_manifest(args, snapshots):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
-        "--sft-checkpoint", default="output/cnn-sft/best", help="SFT dir (with model.pt) or a model.pt path."
-    )
-    p.add_argument(
-        "--base-model", default="models/doom-cnn-4L-no-fwd", help="Encoder dir the policy architecture is built from."
+        "--sft-checkpoint",
+        default="output/cnn-sft/best",
+        help="Checkpoint dir the policy starts from (an SFT dir, or a fresh create-model dir).",
     )
     p.add_argument("--output", default="output/cnn-ppo")
 
@@ -126,11 +124,11 @@ def main():
         else f"last {args.unfreeze_blocks} block(s) + final_norm{' + stem' if args.train_stem else ' (stem frozen)'}"
     )
     print(f"=== Phase 1: Build policy ({unfreeze_desc})  [device={device}] ===")
-    policy = ConvStemPolicy(args.base_model, unfreeze_blocks=args.unfreeze_blocks, train_stem=args.train_stem).to(
-        device
-    )
     print(f"  SFT ckpt: {args.sft_checkpoint}")
-    load_sft_into_policy(policy, args.sft_checkpoint, device)
+    policy = DoomConvStemPolicy.from_pretrained(args.sft_checkpoint)
+    check_pipeline_config(policy.config)
+    policy.set_trainable(unfreeze_blocks=args.unfreeze_blocks, train_stem=args.train_stem)
+    policy = policy.to(device)
     n_total = sum(q.numel() for q in policy.parameters())
     n_train = sum(q.numel() for q in policy.parameters() if q.requires_grad)
     print(f"  Trainable: {n_train:,} / {n_total:,} ({100 * n_train / n_total:.1f}%)")
@@ -276,8 +274,8 @@ def main():
         dt = time.time() - it_start
         recent_mean = float(np.mean(ret_window)) if ret_window else float("nan")
 
-        snap_path = os.path.join(args.output, f"policy_iter{iteration}.pt")
-        torch.save({k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}, snap_path)
+        snap_path = os.path.join(args.output, f"policy_iter{iteration}")
+        policy.save_pretrained(snap_path)
         snapshots.append({"iter": iteration, "path": os.path.basename(snap_path)})
         write_manifest(args, snapshots)
 

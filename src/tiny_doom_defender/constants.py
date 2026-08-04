@@ -5,10 +5,6 @@ RES_W, RES_H = 160, 100  # conv-stem input resolution (pixels)
 N_FRAMES = 3  # previous 2 frames + current  -> motion
 IN_CH = N_FRAMES * 3  # 9 input channels (3 frames x RGB)
 
-# Two stride-2 3x3 convs take 160x100 -> 40x25 exactly (each dim / 4).
-GRID_H, GRID_W = RES_H // 4, RES_W // 4  # 25 x 40
-N_TOKENS = GRID_H * GRID_W  # 1000  (== ModernBERT sequence length)
-
 FRAME_HWC = (RES_H, RES_W, 3)  # single-frame storage shape, uint8
 FRAME_PIXELS = RES_H * RES_W * 3  # 48,000  bytes per stored frame
 STACK_PIXELS = IN_CH * RES_H * RES_W  # 144,000 bytes per 9-channel stack

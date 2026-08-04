@@ -1,17 +1,13 @@
 """
 Watch a trained policy play defend_the_center in a LIVE DOOM window.
 
-Drives DefendCenterConvStemEnv with visible=True, so what you see is fed to the policy
-through the same observation pipeline eval-model scores. Playback is paced to ~real time;
-the terminal prints HP / kills / ammo, the chosen action, and the per-axis probabilities
-behind it.
-
-Pass --seed to watch a specific held-out episode (e.g. a low-scoring seed from an eval —
-seeds 10000+). Consecutive episodes use seed, seed+1, ...
+What you see is fed to the policy through the same observation pipeline eval-model
+scores. Playback is paced to ~real time; the terminal prints HP / kills / ammo, the
+chosen action, and the per-axis probabilities behind it.
 
 Usage:
-  play-doom --ckpt output/cnn-ppo/policy_best.pt
-  play-doom --ckpt output/cnn-ppo/policy_best.pt --seed 10000 --episodes 1 --fps 20 --mode sampled
+  play-doom --ckpt output/cnn-ppo/policy_best
+  play-doom --ckpt output/cnn-ppo/policy_best --seed 10000 --episodes 1 --fps 20 --mode sampled
 """
 
 import argparse
@@ -22,9 +18,9 @@ import numpy as np
 import torch
 import vizdoom
 
-from tiny_doom_defender.config import FRAME_SKIP, TICS_PER_SECOND
+from tiny_doom_defender.constants import FRAME_SKIP, TICS_PER_SECOND
 from tiny_doom_defender.env import DefendCenterConvStemEnv
-from tiny_doom_defender.evaluation import DEFAULT_BASE_MODEL, build_policy, resolve_base_model
+from tiny_doom_defender.evaluation import build_policy
 
 TURN_NAMES = ("left", "none", "right")
 
@@ -43,15 +39,14 @@ def decide(policy, obs, device, mode):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ckpt", default="output/cnn-ppo/policy_best.pt", help="SFT dir (best/) or a PPO policy .pt file.")
-    ap.add_argument(
-        "--base-model",
-        default=None,
-        help=f"Encoder dir the policy architecture is built from. Default: the base_model recorded "
-        f"in the run's manifest.json when --ckpt is a PPO snapshot, else {DEFAULT_BASE_MODEL}.",
-    )
+    ap.add_argument("--ckpt", default="output/cnn-ppo/policy_best", help="SFT dir (best/) or a PPO snapshot dir.")
     ap.add_argument("--episodes", type=int, default=3)
-    ap.add_argument("--seed", type=int, default=None, help="First episode seed (then seed+1, ...). Omit for random.")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="First episode seed, then seed+1, ... (held-out TEST seeds are 10000+). Omit for random.",
+    )
     ap.add_argument("--mode", default="argmax", choices=["argmax", "sampled"])
     ap.add_argument("--fps", type=float, default=35.0, help="Playback pace (35=real time, 20=slow-mo, 60+=fast).")
     ap.add_argument("--device", default="cpu", choices=["cpu", "mps", "cuda"])
@@ -59,9 +54,8 @@ def main():
     args = ap.parse_args()
 
     device = torch.device(args.device)
-    base_model = resolve_base_model(args.ckpt, args.base_model)
-    print(f"Loading policy {args.ckpt} (base {base_model})...")
-    policy = build_policy(args.ckpt, base_model, device)
+    print(f"Loading policy {args.ckpt}...")
+    policy = build_policy(args.ckpt, device)
     n_params = sum(p.numel() for p in policy.parameters())
     print(f"Policy: {n_params:,} params  |  mode={args.mode}")
 

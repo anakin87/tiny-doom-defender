@@ -16,9 +16,8 @@ in RAM at once):
   <output>/record_meta.json  provenance + frag/survival metrics + shapes
 
 Optionally push the recorded dir to the HuggingFace Hub with
-`--save-to-dataset <user>/<repo>` (raw files, LFS handles frames.u8); reload later
-by passing that repo id to `train-sft --data`. Needs a WRITE token
-(huggingface-cli login or HF_TOKEN).
+`--save-to-dataset <user>/<repo>` (needs a write token); pass that repo id to
+`train-sft --data` to reload it.
 
 Usage:
     record-oracle --episodes 400 --output data/cnn-oracle
@@ -33,7 +32,7 @@ from collections import deque
 import numpy as np
 import vizdoom
 
-from tiny_doom_defender.config import (
+from tiny_doom_defender.constants import (
     FRAME_SKIP,
     N_PREV,
     RES_H,

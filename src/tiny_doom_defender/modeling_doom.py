@@ -3,16 +3,16 @@ Conv-stem "eye" in front of ModernBERT: the stem turns a frame stack into a fixe
 1000-cell grid fed via `inputs_embeds`. Every cell is a real patch (no padding,
 unlike a tokenized sequence), so the attention mask is all-ones.
 
-Two heads sit on the shared trunk: DoomConvStemClassifier for SFT, ConvStemPolicy for RL.
+Two heads sit on the shared trunk: DoomConvStemForActionClassification for SFT,
+DoomConvStemPolicy for RL.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel
+from transformers import AutoConfig, AutoModel, ModernBertModel, PreTrainedModel
 
-from tiny_doom_defender.config import IN_CH, N_ACTION_STATES, N_PREV, RES_H, RES_W, STACK_PIXELS
-from tiny_doom_defender.utils import check_stem_config
+from tiny_doom_defender.configuration_doom import DoomConvStemConfig
 
 # =============================================================================
 # The eye
@@ -29,18 +29,18 @@ class ConvStem(nn.Module):
     stays distinct.
     """
 
-    def __init__(self, in_ch=IN_CH, hidden=128, n_prev=N_PREV, n_action_states=N_ACTION_STATES):
+    def __init__(self, config: DoomConvStemConfig):
         super().__init__()
+        hidden = config.hidden_size
         self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, 32, kernel_size=3, stride=2, padding=1),  # 160x100 -> 80x50
+            nn.Conv2d(config.in_channels, config.stem_channels, kernel_size=3, stride=2, padding=1),  # /2
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, hidden, kernel_size=3, stride=2, padding=1),  # 80x50  -> 40x25
+            nn.Conv2d(config.stem_channels, hidden, kernel_size=3, stride=2, padding=1),  # /4
             nn.ReLU(inplace=True),
         )
-        self.n_prev = n_prev
-        self.n_action_states = n_action_states
-        self.act_emb = nn.Embedding(n_prev * n_action_states, hidden)
-        nn.init.normal_(self.act_emb.weight, std=0.02)
+        self.n_prev = config.n_prev_actions
+        self.n_action_states = config.n_action_states
+        self.act_emb = nn.Embedding(self.n_prev * self.n_action_states, hidden)
 
     def forward(self, frames, prev_actions):
         """frames: (B, 9, RES_H, RES_W) uint8 or float; prev_actions: (B, N_PREV) long."""
@@ -59,25 +59,35 @@ class ConvStem(nn.Module):
 # =============================================================================
 
 
-class _StemTrunk(nn.Module):
+class DoomConvStemPreTrainedModel(PreTrainedModel):
     """stem + ModernBERT encoder + learned attention pool -> pooled (B, hidden).
 
     We always feed `inputs_embeds`, so the encoder's token-embedding table is unused
-    dead weight (create_model.py builds it with a tiny vocab to keep it small). The
-    pool scores each of the 1000 cells with one learned linear, softmax-weights them,
-    and sums.
+    dead weight (the config keeps its vocab tiny). The pool scores each of the 1000
+    cells with one learned linear, softmax-weights them, and sums.
     """
 
-    def __init__(self, encoder_dir):
-        super().__init__()
-        self.encoder = AutoModel.from_pretrained(encoder_dir)
-        hidden = self.encoder.config.hidden_size
-        # Stem geometry comes from config.py; the model dir's stem_config.json is the
-        # stamp of what this encoder was built for, and only gets checked against it.
-        check_stem_config(encoder_dir)
-        self.stem = ConvStem(hidden=hidden)
-        self.attn_weight = nn.Linear(hidden, 1, bias=False)
-        self.hidden_size = hidden
+    config_class = DoomConvStemConfig
+    main_input_name = "frames"
+
+    def __init__(self, config: DoomConvStemConfig):
+        super().__init__(config)
+        self.encoder = ModernBertModel(config.encoder_config)
+        self.stem = ConvStem(config)
+        self.attn_weight = nn.Linear(config.hidden_size, 1, bias=False)
+        self.hidden_size = config.hidden_size
+        # Flat-obs layout (the PPO vector env packs [frames | prev_actions] as uint8).
+        self._stack_pixels = config.in_channels * config.res_h * config.res_w
+        self._frame_shape = (config.in_channels, config.res_h, config.res_w)
+
+    def _init_weights(self, module):
+        # Only this model's own modules arrive here: the encoder is itself a
+        # PreTrainedModel, so initialize_weights dispatches its modules to
+        # ModernBERT's _init_weights.
+        if isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, std=0.02)
+        elif isinstance(module, (nn.Conv2d, nn.Linear)):
+            module.reset_parameters()
 
     def encode(self, frames, prev_actions):
         embeds = self.stem(frames, prev_actions)  # (B, 1000, H)
@@ -95,20 +105,18 @@ class _StemTrunk(nn.Module):
 # =============================================================================
 
 
-class DoomConvStemClassifier(_StemTrunk):
+class DoomConvStemForActionClassification(DoomConvStemPreTrainedModel):
     """Conv-stem ModernBERT with two independent heads for MultiDiscrete([3,2]).
 
     Turn (left/none/right) and shoot (no/yes) each get a linear head off the pooled
     vector; loss is the equal-weight sum of the two cross-entropies.
     """
 
-    TURN_NAMES = ["turn_left", "turn_none", "turn_right"]
-    SHOOT_NAMES = ["no_shoot", "shoot"]
-
-    def __init__(self, encoder_dir):
-        super().__init__(encoder_dir)
+    def __init__(self, config: DoomConvStemConfig):
+        super().__init__(config)
         self.turn_head = nn.Linear(self.hidden_size, 3)
         self.shoot_head = nn.Linear(self.hidden_size, 2)
+        self.post_init()
 
     def forward(self, frames, prev_actions, turn_labels=None, shoot_labels=None):
         pooled = self.encode(frames, prev_actions)
@@ -142,23 +150,32 @@ def _sample_multidiscrete(logits_tuple, action=None):
     return actions, log_probs, entropies
 
 
-class ConvStemPolicy(_StemTrunk):
+class DoomConvStemPolicy(DoomConvStemPreTrainedModel):
     """Actor-critic over the conv-stem trunk, on the flat uint8 observation (B, OBS_LEN).
 
-    unfreeze_blocks=0 trains everything; N>0 trains only the last N encoder layers +
-    final_norm, with the stem frozen unless train_stem. The attention pool and the three
-    heads are always trainable.
+    Built fully trainable; call set_trainable(unfreeze_blocks=N) to freeze all but the
+    last N encoder layers + final_norm (and the stem, unless train_stem). The attention
+    pool and the three heads are always trainable.
     """
 
-    def __init__(self, encoder_dir, unfreeze_blocks=0, train_stem=False):
-        super().__init__(encoder_dir)
+    def __init__(self, config: DoomConvStemConfig):
+        super().__init__(config)
         self.turn_head = nn.Linear(self.hidden_size, 3)
         self.shoot_head = nn.Linear(self.hidden_size, 2)
         self.value_head = nn.Linear(self.hidden_size, 1)
-        for h in (self.turn_head, self.shoot_head, self.value_head):
-            nn.init.orthogonal_(h.weight, gain=0.01)
-            nn.init.zeros_(h.bias)
+        self.set_trainable(unfreeze_blocks=0)
+        self.post_init()
 
+    def _init_weights(self, module):
+        if module is self.turn_head or module is self.shoot_head or module is self.value_head:
+            nn.init.orthogonal_(module.weight, gain=0.01)
+            nn.init.zeros_(module.bias)
+        else:
+            super()._init_weights(module)
+
+    def set_trainable(self, unfreeze_blocks=0, train_stem=False):
+        """unfreeze_blocks=0 trains everything; N>0 trains only the last N encoder layers +
+        final_norm, with the stem frozen unless train_stem."""
         n_layers = len(self.encoder.layers)
         if not 0 <= unfreeze_blocks <= n_layers:
             raise ValueError(f"unfreeze_blocks must be in [0, {n_layers}], got {unfreeze_blocks}")
@@ -205,12 +222,20 @@ class ConvStemPolicy(_StemTrunk):
             + list(self.value_head.parameters())
         )
 
-    @staticmethod
-    def _unpack(obs):
+    def _unpack(self, obs):
         obs = obs.to(torch.uint8) if obs.dtype != torch.uint8 else obs
-        frames = obs[:, :STACK_PIXELS].view(-1, IN_CH, RES_H, RES_W)
-        prev = obs[:, STACK_PIXELS:].long()  # (B, N_PREV)
+        frames = obs[:, : self._stack_pixels].view(-1, *self._frame_shape)
+        prev = obs[:, self._stack_pixels :].long()  # (B, N_PREV)
         return frames, prev
+
+    def forward(self, frames, prev_actions):
+        """(frames, prev_actions) -> {"turn_logits", "shoot_logits", "value"}."""
+        pooled = self.encode(frames, prev_actions)
+        return {
+            "turn_logits": self.turn_head(pooled),
+            "shoot_logits": self.shoot_head(pooled),
+            "value": self.value_head(pooled).squeeze(-1),
+        }
 
     def _heads(self, pooled):
         return (self.turn_head(pooled), self.shoot_head(pooled))
@@ -238,3 +263,7 @@ class ConvStemPolicy(_StemTrunk):
         frames, prev = self._unpack(obs)
         turn_logits, shoot_logits = self._heads(self.encode(frames, prev))
         return torch.softmax(turn_logits, -1), torch.softmax(shoot_logits, -1)
+
+
+AutoConfig.register("doom_conv_stem", DoomConvStemConfig)
+AutoModel.register(DoomConvStemConfig, DoomConvStemPolicy)

@@ -43,3 +43,9 @@ dmypy.json
 
 uv.lock
 notes.md
+
+# Project artifacts (generated)
+_vizdoom.ini
+output/
+models/
+data/

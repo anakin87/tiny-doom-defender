@@ -1,82 +1,27 @@
 """Turn a checkpoint into a playing policy and score it: loading, the episode loop,
 and the metrics every script reports."""
 
-import json
-import os
-
 import numpy as np
 import torch
 
-from tiny_doom_defender.model import ConvStemPolicy
-
-DEFAULT_BASE_MODEL = "models/doom-cnn-4L-no-fwd"
-
+from tiny_doom_defender.modeling_doom import DoomConvStemPolicy
+from tiny_doom_defender.utils import check_pipeline_config
 
 # =============================================================================
 # Loading a checkpoint
 # =============================================================================
 
 
-def load_sft_into_policy(policy, sft_checkpoint, device, verbose=True):
-    """Overlay an SFT checkpoint (a dir with model.pt, or the model.pt path) onto `policy`.
+def build_policy(ckpt, device):
+    """Load a checkpoint dir into a ready-to-score policy, in eval mode.
 
-    Every key present in both with a matching shape is copied; the rest keeps its fresh
-    init. Trunk, pool and the two action heads match DoomConvStemClassifier by name, so
-    value_head is the only thing left untouched.
+    Works on either checkpoint kind: a PPO snapshot loads fully; an SFT checkpoint
+    is missing value_head, which from_pretrained leaves at its fresh init (eval
+    never reads it).
     """
-    sft_path = os.path.join(sft_checkpoint, "model.pt") if os.path.isdir(sft_checkpoint) else sft_checkpoint
-    if not os.path.isfile(sft_path):
-        raise FileNotFoundError(f"SFT checkpoint not found at {sft_path}")
-    sft_state = torch.load(sft_path, map_location="cpu", weights_only=True)
-    fresh = policy.state_dict()
-    merged = dict(fresh)
-    matched = 0
-    for k, v in sft_state.items():
-        if k in merged and merged[k].shape == v.shape:
-            merged[k] = v.to(device)
-            matched += 1
-    fresh_only = sorted(set(fresh) - set(sft_state))
-    if verbose:
-        print(f"  SFT keys loaded: {matched}/{len(sft_state)};  random-init kept: {fresh_only}")
-    policy.load_state_dict(merged)
-
-
-def is_policy_checkpoint(ckpt):
-    """True for a PPO snapshot (a .pt file holding a full policy state dict); an SFT
-    checkpoint is a directory containing model.pt."""
-    return os.path.isfile(ckpt) and ckpt.endswith(".pt")
-
-
-def resolve_base_model(ckpt, base_model=None):
-    """Which encoder dir to rebuild the architecture from.
-
-    An explicit base_model wins. Otherwise a PPO snapshot is a bare state dict, so use
-    the encoder its run recorded in manifest.json. Nothing catches a wrong one: heads,
-    attention window and RoPE thetas change the forward pass without changing any
-    parameter shape, so a mismatched encoder loads without error.
-    """
-    if base_model is not None:
-        return base_model
-    manifest = os.path.join(os.path.dirname(os.path.abspath(ckpt)), "manifest.json")
-    if is_policy_checkpoint(ckpt) and os.path.isfile(manifest):
-        with open(manifest) as f:
-            from_run = json.load(f).get("base_model")
-        if from_run:
-            print(f"  base-model from {manifest}: {from_run}")
-            return from_run
-    return DEFAULT_BASE_MODEL
-
-
-def build_policy(ckpt, base_model, device, verbose=True):
-    """Load either checkpoint kind into a ready-to-score policy, in eval mode.
-
-    Fully unfrozen: unfreeze_blocks only flips requires_grad, which nothing here reads.
-    """
-    policy = ConvStemPolicy(base_model, unfreeze_blocks=0).to(device)
-    if is_policy_checkpoint(ckpt):
-        policy.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
-    else:
-        load_sft_into_policy(policy, ckpt, device, verbose=verbose)
+    policy = DoomConvStemPolicy.from_pretrained(ckpt)
+    check_pipeline_config(policy.config)
+    policy.to(device)
     policy.eval()
     return policy
 
@@ -154,18 +99,3 @@ def fmt_summary(tag, m):
         f"  [{tag}] frags mean={m['mean']:.2f} ± {m['std']:.2f}  "
         f"[{m['min']:.0f}, {m['max']:.0f}] median={m['median']:.1f}{acc}"
     )
-
-
-def pick_device(device_arg="auto", parallel=False):
-    """'auto' -> cuda/mps/cpu, but cpu when parallel: worker processes would contend on the
-    single accelerator. Pinning the device also keeps scores comparable across runs (MPS
-    and CPU differ in float and RNG)."""
-    if device_arg != "auto":
-        return torch.device(device_arg)
-    if parallel:
-        return torch.device("cpu")
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")

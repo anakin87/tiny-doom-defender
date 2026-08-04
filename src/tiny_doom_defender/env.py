@@ -7,7 +7,7 @@ import gymnasium as gym
 import numpy as np
 import vizdoom
 
-from tiny_doom_defender.config import FRAME_SKIP, N_FRAMES, N_PREV, OBS_LEN, START_ACTION
+from tiny_doom_defender.constants import FRAME_SKIP, N_FRAMES, N_PREV, OBS_LEN, START_ACTION
 from tiny_doom_defender.game import screen_to_frame, setup_game
 from tiny_doom_defender.utils import combine_action, pack_obs, stack_channels
 

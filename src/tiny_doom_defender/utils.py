@@ -1,9 +1,22 @@
-import json
-import os
-
 import numpy as np
+import torch
 
-from tiny_doom_defender import config
+from tiny_doom_defender import constants
+
+
+def pick_device(device_arg="auto", parallel=False):
+    """'auto' -> cuda/mps/cpu, but cpu when parallel: worker processes would contend on the
+    single accelerator. Pinning the device also keeps scores comparable across runs (MPS
+    and CPU differ in float and RNG)."""
+    if device_arg != "auto":
+        return torch.device(device_arg)
+    if parallel:
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def combine_action(turn, shoot):
@@ -24,50 +37,27 @@ def stack_channels(frames):
 
 def pack_obs(stack_u8, prev_actions):
     """(9, H, W) uint8 stack + length-N_PREV prev-action list -> (OBS_LEN,) uint8."""
-    obs = np.empty(config.OBS_LEN, dtype=np.uint8)
-    obs[: config.STACK_PIXELS] = stack_u8.reshape(-1)
-    obs[config.STACK_PIXELS :] = np.asarray(prev_actions, dtype=np.uint8)
+    obs = np.empty(constants.OBS_LEN, dtype=np.uint8)
+    obs[: constants.STACK_PIXELS] = stack_u8.reshape(-1)
+    obs[constants.STACK_PIXELS :] = np.asarray(prev_actions, dtype=np.uint8)
     return obs
 
 
-def stem_config():
-    """The conv-stem geometry, from config.py — the one runtime source.
-
-    create_model.py stamps this into <model_dir>/stem_config.json and check_stem_config
-    compares a model dir's stamp back against it, so both sides always speak of the
-    same keys.
-    """
-    return {
-        "input_resolution": [config.RES_H, config.RES_W],
-        "n_frames": config.N_FRAMES,
-        "in_channels": config.IN_CH,
-        "n_prev_actions": config.N_PREV,
-        "n_action_states": config.N_ACTION_STATES,
-        "token_grid": [config.GRID_H, config.GRID_W],
-        "n_tokens": config.N_TOKENS,
+def check_pipeline_config(model_config):
+    """Raise if a model's input geometry disagrees with constants.py — what the env,
+    recorder and dataset actually produce. The stem is fully convolutional, so a
+    mismatch would otherwise load cleanly and merely score worse."""
+    expected = {
+        "res_h": constants.RES_H,
+        "res_w": constants.RES_W,
+        "n_frames": constants.N_FRAMES,
+        "n_prev_actions": constants.N_PREV,
+        "n_action_states": constants.N_ACTION_STATES,
     }
-
-
-def check_stem_config(model_dir):
-    """Raise if <model_dir>/stem_config.json disagrees with the config.py geometry.
-
-    config.py is what the recorder, the dataset and the env actually produce, so a model
-    stamped with a different geometry has nothing that can feed it. Compares every key
-    of stem_config() present in the stamp — including the ones ConvStem never reads
-    (it is fully convolutional, so a resolution mismatch would otherwise load cleanly
-    and merely score worse). Unstamped dirs pass unchecked.
-    """
-    path = os.path.join(model_dir, "stem_config.json")
-    if not os.path.isfile(path):
-        return
-    with open(path) as f:
-        stamped = json.load(f)
-    diff = {k: (v, stamped[k]) for k, v in stem_config().items() if k in stamped and stamped[k] != v}
+    diff = {k: (want, getattr(model_config, k)) for k, want in expected.items() if getattr(model_config, k) != want}
     if diff:
-        rows = "\n".join(f"  {k}: model {got}, config.py {want}" for k, (want, got) in diff.items())
+        rows = "\n".join(f"  {k}: model {got}, constants.py {want}" for k, (want, got) in diff.items())
         raise ValueError(
-            f"{path} does not match the config.py geometry:\n{rows}\n"
-            "Use a model built with the current geometry, or change config.py to match this "
-            "one — but every recorded dataset and every other checkpoint is tied to config.py, "
-            "so they have to be re-made too."
+            f"Model geometry does not match constants.py:\n{rows}\n"
+            "Use a model built with the current geometry, or change constants.py."
         )

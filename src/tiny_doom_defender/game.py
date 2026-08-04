@@ -4,7 +4,7 @@ import numpy as np
 import vizdoom
 from PIL import Image
 
-from tiny_doom_defender.config import EPISODE_TIMEOUT, RES_H, RES_W
+from tiny_doom_defender.constants import EPISODE_TIMEOUT, RES_H, RES_W
 
 
 def setup_game(

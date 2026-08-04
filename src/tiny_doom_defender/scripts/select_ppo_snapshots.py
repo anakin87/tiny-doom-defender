@@ -1,9 +1,8 @@
 """
 Rank the snapshots of a PPO run offline and keep the best one.
 
-Rebuilds the policy on the encoder recorded in the run's manifest.json, replays every
-snapshot on the SEED_SELECTION pool, ranks by mean frags and copies the winner to
-<output-dir>/policy_best.pt.
+Replays every policy_iter* snapshot dir in --output-dir on the SEED_SELECTION pool,
+ranks by mean frags and copies the winner to <output-dir>/policy_best.
 
 Usage:
   select-ppo-snapshots --output-dir output/cnn-ppo
@@ -14,15 +13,18 @@ import argparse
 import json
 import multiprocessing as mp
 import os
+import re
+import shutil
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
 import torch
 
-from tiny_doom_defender.config import SEED_SELECTION
+from tiny_doom_defender.constants import SEED_SELECTION
 from tiny_doom_defender.env import DefendCenterConvStemEnv
-from tiny_doom_defender.evaluation import build_policy, fmt_summary, pick_device, play_episodes, summarize
+from tiny_doom_defender.evaluation import build_policy, fmt_summary, play_episodes, summarize
+from tiny_doom_defender.utils import pick_device
 
 
 def parse_iters(spec):
@@ -46,7 +48,17 @@ def parse_iters(spec):
     return out
 
 
-def eval_snapshots(base_model, output_dir, snaps, seeds, mode, device_str, sample_seed, progress=False):
+def find_snapshots(output_dir):
+    """policy_iter* dirs in `output_dir` -> [{"iter": N, "path": basename}], iter ascending."""
+    snapshots = []
+    for name in os.listdir(output_dir):
+        m = re.fullmatch(r"policy_iter(\d+)", name)
+        if m and os.path.isdir(os.path.join(output_dir, name)):
+            snapshots.append({"iter": int(m.group(1)), "path": name})
+    return sorted(snapshots, key=lambda s: s["iter"])
+
+
+def eval_snapshots(output_dir, snaps, seeds, mode, device_str, sample_seed, progress=False):
     """Score `snaps` sequentially, reusing one VizDoom instance."""
     device = torch.device(device_str)
     env = DefendCenterConvStemEnv()
@@ -54,9 +66,7 @@ def eval_snapshots(base_model, output_dir, snaps, seeds, mode, device_str, sampl
     try:
         for s in snaps:
             snap_path = os.path.join(output_dir, s["path"])
-            if not os.path.isfile(snap_path):
-                continue
-            policy = build_policy(snap_path, base_model, device)
+            policy = build_policy(snap_path, device)
             m = summarize([play_episodes(policy, env, device, seeds, mode, sample_seed=sample_seed)])
             out.append((s["iter"], s["path"], m))
             if progress:
@@ -67,14 +77,14 @@ def eval_snapshots(base_model, output_dir, snaps, seeds, mode, device_str, sampl
 
 
 def _worker(payload):
-    (base_model, output_dir, snaps, seeds, mode, device_str, sample_seed) = payload
+    (output_dir, snaps, seeds, mode, device_str, sample_seed) = payload
     # progress=True: workers share the parent's stdout, so scores stream in as they finish.
-    return eval_snapshots(base_model, output_dir, snaps, seeds, mode, device_str, sample_seed, progress=True)
+    return eval_snapshots(output_dir, snaps, seeds, mode, device_str, sample_seed, progress=True)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--output-dir", required=True, help="A train_ppo.py --output dir (must contain manifest.json).")
+    p.add_argument("--output-dir", required=True, help="A train_ppo.py --output dir with policy_iter* snapshot dirs.")
     p.add_argument("--episodes", type=int, default=40)
     p.add_argument("--seed-base", type=int, default=SEED_SELECTION)
     p.add_argument("--iters", default=None, help="Iterations/ranges to evaluate, e.g. '20-30,35'. Default: all.")
@@ -86,20 +96,15 @@ def main():
     p.add_argument("--report", default=None, help="Where to write the JSON report. Default: inside --output-dir.")
     args = p.parse_args()
 
-    manifest_path = os.path.join(args.output_dir, "manifest.json")
-    if not os.path.isfile(manifest_path):
-        sys.exit(f"ERROR: no manifest.json at {manifest_path}")
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-    base_model = manifest["base_model"]
-    print(f"Loaded manifest: {len(manifest['snapshots'])} snapshots  (base_model={base_model})")
+    found = find_snapshots(args.output_dir)
+    print(f"Found {len(found)} snapshots in {args.output_dir}")
 
-    by_iter = {s["iter"]: s for s in manifest["snapshots"]}
     order = parse_iters(args.iters)
     if order is not None:
+        by_iter = {s["iter"]: s for s in found}
         snapshots = [by_iter[i] for i in order if i in by_iter]
     else:
-        snapshots = sorted(manifest["snapshots"], key=lambda s: s["iter"])
+        snapshots = found
     if not snapshots:
         sys.exit("ERROR: no snapshots selected.")
 
@@ -113,13 +118,11 @@ def main():
 
     t0 = time.time()
     if args.workers <= 1:
-        flat = eval_snapshots(
-            base_model, args.output_dir, snapshots, seeds, args.mode, device.type, args.seed_base, progress=True
-        )
+        flat = eval_snapshots(args.output_dir, snapshots, seeds, args.mode, device.type, args.seed_base, progress=True)
     else:
         n = min(args.workers, len(snapshots))
         chunks = [snapshots[i::n] for i in range(n)]
-        payloads = [(base_model, args.output_dir, c, seeds, args.mode, device.type, args.seed_base) for c in chunks]
+        payloads = [(args.output_dir, c, seeds, args.mode, device.type, args.seed_base) for c in chunks]
         ctx = mp.get_context("spawn")
         with ProcessPoolExecutor(max_workers=len(chunks), mp_context=ctx) as ex:
             flat = [r for part in ex.map(_worker, payloads) for r in part]
@@ -140,16 +143,14 @@ def main():
     print(f"\nWinner: iter {winner['iter']}  frags={winner['score']:.2f} ± {winner['std']:.2f}")
 
     if args.save_best:
-        best_path = os.path.join(args.output_dir, "policy_best.pt")
-        sd = torch.load(os.path.join(args.output_dir, winner["path"]), map_location="cpu", weights_only=True)
-        torch.save(sd, best_path)
+        best_path = os.path.join(args.output_dir, "policy_best")
+        shutil.copytree(os.path.join(args.output_dir, winner["path"]), best_path, dirs_exist_ok=True)
         print(f"Saved winning snapshot -> {best_path}")
 
     report_path = args.report or os.path.join(args.output_dir, f"rerank_seed{args.seed_base}_{args.mode}.json")
     with open(report_path, "w") as f:
         json.dump(
             {
-                "manifest": manifest,
                 "episodes": args.episodes,
                 "seed_base": args.seed_base,
                 "mode": args.mode,
@@ -162,7 +163,7 @@ def main():
     print(f"Report written to {report_path}")
 
     print("\nNB: biased selection score. Report the TEST number:")
-    print(f"  eval-model --ckpt {args.output_dir}/policy_best.pt --episodes 100")
+    print(f"  eval-model --ckpt {args.output_dir}/policy_best --episodes 100")
 
 
 if __name__ == "__main__":

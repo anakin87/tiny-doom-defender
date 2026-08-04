@@ -1,120 +1,29 @@
 """
 SFT the conv-stem classifier on oracle demonstrations (behavior cloning).
 
-Builds DoomConvStemClassifier (architecture in model.py) from the --base-model
-encoder dir and trains it end-to-end. Loss is the equal-weight sum of the turn and
-shoot cross-entropies; head biases init to log class priors, which removes the
-cold-start majority-class attractor.
+Trains DoomConvStemForActionClassification end-to-end on the recorded dataset
+(ConvStemFrameDataset, data.py). Loss is the equal-weight sum of the turn and shoot
+cross-entropies; head biases init to log class priors, which removes the cold-start
+majority-class attractor.
 
-The frame-stacking dataset (`ConvStemFrameDataset`) memory-maps `frames.u8` and,
-per index, builds the 9-channel stack [F_{t-2}, F_{t-1}, F_t] with episode-boundary
-clamping (at episode start the current frame is repeated, so no motion leaks across
-episodes). prev0/prev1 come from the label columns. Frames stay uint8; the stem
-casts + normalizes on device.
-
-Saves the full state dict as model.pt to <output>/best and <output>/final.
+Saves HF checkpoints to <output>/best and <output>/final.
 
 Usage:
-    train-sft --data data/cnn-oracle --base-model models/doom-cnn-4L-no-fwd --bf16
+    train-sft --data data/cnn-oracle --bf16
 """
 
 import argparse
 import os
-import shutil
 import time
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
-from tiny_doom_defender.config import RES_H, RES_W
-from tiny_doom_defender.model import DoomConvStemClassifier
-
-# =============================================================================
-# Frame-stacking dataset
-# =============================================================================
-
-
-class ConvStemFrameDataset(Dataset):
-    REQUIRED = ("turn", "shoot", "prev0", "prev1", "ep")
-
-    def __init__(self, data_path):
-        data_dir = self._resolve(data_path)
-        frames_path = os.path.join(data_dir, "frames.u8")
-        labels_path = os.path.join(data_dir, "labels.npz")
-        if not (os.path.isfile(frames_path) and os.path.isfile(labels_path)):
-            raise FileNotFoundError(f"{data_dir} must contain frames.u8 + labels.npz (the recorded oracle dataset)")
-
-        lab = np.load(labels_path)
-        missing = [c for c in self.REQUIRED if c not in lab.files]
-        if missing:
-            raise ValueError(f"labels.npz missing columns {missing}; found {lab.files}")
-        self.turn = lab["turn"]
-        self.shoot = lab["shoot"]
-        self.prev0 = lab["prev0"]
-        self.prev1 = lab["prev1"]
-        self.ep = lab["ep"]
-
-        n = len(self.turn)
-        expected = n * RES_H * RES_W * 3
-        actual = os.path.getsize(frames_path)
-        if actual != expected:
-            raise ValueError(
-                f"frames.u8 size {actual} != expected {expected} "
-                f"({n} frames x {RES_H}x{RES_W}x3). Corrupt, or recorded at a different "
-                f"config.py geometry than the current one."
-            )
-        self.frames = np.memmap(frames_path, dtype=np.uint8, mode="r", shape=(n, RES_H, RES_W, 3))
-
-        # Predecessor indices with per-episode clamping: p1 = one step back (same
-        # episode, else self), p2 = two steps back (same episode, else clamp to p1).
-        # Episodes are contiguous blocks, so "i-k same episode" == ep[i-k]==ep[i].
-        idx = np.arange(n)
-        prev1_same = np.zeros(n, dtype=bool)
-        prev1_same[1:] = self.ep[1:] == self.ep[:-1]
-        p1 = np.where(prev1_same, idx - 1, idx)
-        prev2_same = np.zeros(n, dtype=bool)
-        prev2_same[2:] = self.ep[2:] == self.ep[:-2]
-        p2 = np.where(prev1_same & prev2_same, idx - 2, p1)
-        self._p1, self._p2 = p1, p2
-        self._n = n
-
-    @staticmethod
-    def _resolve(data_path):
-        """Local dir -> use as-is; otherwise treat `data_path` as a HuggingFace Hub
-        dataset repo id and snapshot_download it (cached on subsequent runs). The
-        snapshot has the same frames.u8 + labels.npz layout."""
-        if os.path.isdir(data_path):
-            return data_path
-        from huggingface_hub import snapshot_download
-
-        print(f"  Downloading HF dataset {data_path} (cached on subsequent runs)...")
-        return snapshot_download(repo_id=data_path, repo_type="dataset")
-
-    def __len__(self):
-        return self._n
-
-    def label_distribution(self):
-        return {
-            "turn_L": float((self.turn == 0).mean()),
-            "turn_N": float((self.turn == 1).mean()),
-            "turn_R": float((self.turn == 2).mean()),
-            "shoot": float((self.shoot == 1).mean()),
-        }
-
-    def __getitem__(self, i):
-        f2 = self.frames[self._p2[i]]  # oldest  (F_{t-2})
-        f1 = self.frames[self._p1[i]]  # F_{t-1}
-        f0 = self.frames[i]  # current (F_t)
-        stack = np.concatenate([f2, f1, f0], axis=2)  # (H, W, 9)
-        stack = np.ascontiguousarray(stack.transpose(2, 0, 1))  # (9, H, W)
-        return {
-            "frames": torch.from_numpy(stack),
-            "prev_actions": torch.tensor([self.prev0[i], self.prev1[i]], dtype=torch.long),
-            "turn_label": torch.tensor(int(self.turn[i]), dtype=torch.long),
-            "shoot_label": torch.tensor(int(self.shoot[i]), dtype=torch.long),
-        }
-
+from tiny_doom_defender.configuration_doom import DoomConvStemConfig
+from tiny_doom_defender.data import ConvStemFrameDataset
+from tiny_doom_defender.modeling_doom import DoomConvStemForActionClassification
+from tiny_doom_defender.utils import check_pipeline_config
 
 # =============================================================================
 # Eval + train
@@ -156,8 +65,9 @@ def main():
     )
     ap.add_argument(
         "--base-model",
-        default="models/doom-cnn-4L-no-fwd",
-        help="Encoder dir from create_model.py (config + weights).",
+        default=None,
+        help="Optional checkpoint dir to start from (e.g. a create-model dir for a non-default "
+        "architecture). Default: a fresh model from the DoomConvStemConfig defaults.",
     )
     ap.add_argument("--output", default="output/cnn-sft")
     ap.add_argument("--epochs", type=int, default=40)
@@ -217,8 +127,14 @@ def main():
         eval_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True
     )
 
-    print(f"\nBuilding model from {args.base_model}...")
-    model = DoomConvStemClassifier(args.base_model).to(device)
+    if args.base_model:
+        print(f"\nLoading model from {args.base_model}...")
+        model = DoomConvStemForActionClassification.from_pretrained(args.base_model)
+    else:
+        print("\nBuilding fresh model from config defaults...")
+        model = DoomConvStemForActionClassification(DoomConvStemConfig())
+    check_pipeline_config(model.config)
+    model = model.to(device)
     n_total = sum(p.numel() for p in model.parameters())
     n_stem = sum(p.numel() for p in model.stem.parameters())
     n_enc = sum(p.numel() for p in model.encoder.parameters())
@@ -253,12 +169,7 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     def save_ckpt(path):
-        os.makedirs(path, exist_ok=True)
-        torch.save(model.state_dict(), os.path.join(path, "model.pt"))
-        for fn in ("config.json", "stem_config.json"):
-            src = os.path.join(args.base_model, fn)
-            if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(path, fn))
+        model.save_pretrained(path)
 
     es_desc = f"patience={args.patience} evals" if args.patience else "off"
     print(
