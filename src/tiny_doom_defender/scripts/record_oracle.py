@@ -84,7 +84,7 @@ def push_to_hub(data_dir, repo_id, private, commit_message):
     print("  Repo ready. Uploading (LFS handles frames.u8 — this can take a while)...")
     HfApi().upload_folder(folder_path=data_dir, repo_id=repo_id, repo_type="dataset", commit_message=commit_message)
     print(f"Done: https://huggingface.co/datasets/{repo_id}")
-    print(f"Reload it later with:\n  train-sft --data {repo_id} --base-model models/doom-cnn-4L-no-fwd --bf16")
+    print(f"Reload it later with:\n  train-sft --data {repo_id} --bf16")
 
 
 def main():
