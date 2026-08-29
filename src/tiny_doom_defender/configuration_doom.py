@@ -68,6 +68,7 @@ class DoomConvStemConfig(PreTrainedConfig):
     n_prev_actions: int = pipeline.N_PREV
     n_action_states: int = pipeline.N_ACTION_STATES
     stem_channels: int = 32
+    quantization: str | None = None  # set by quantize_int8; None means plain fp32 weights
 
     def __post_init__(self, **kwargs):
         if self.encoder_config is None:

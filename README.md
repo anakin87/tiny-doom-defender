@@ -1,5 +1,7 @@
 # tiny-doom-defender
 
+![cover](./assets/cover.png)
+
 A ~1M-param conv-stem ModernBERT agent for VizDoom's *defend_the_center*: behavior-cloned from a scripted oracle, then PPO-refined. Transformers-native — every checkpoint is a standard HF model dir.
 
 ## Files
@@ -26,5 +28,6 @@ A ~1M-param conv-stem ModernBERT agent for VizDoom's *defend_the_center*: behavi
 | `train-sft` | Behavior-clone the classifier on oracle demonstrations |
 | `train-ppo` | PPO-refine the SFT policy; writes per-iteration snapshots |
 | `select-ppo-snapshots` | Rank a run's snapshots, keep the best as `policy_best` |
+| `quantize-int8` | Quantize a checkpoint to int8 so policy + code fit on a floppy |
 | `eval-model` | Score a checkpoint on held-out test seeds |
 | `play-doom` | Watch a checkpoint play in a live DOOM window |

@@ -1,11 +1,18 @@
 """Turn a checkpoint into a playing policy and score it: loading, the episode loop,
 and the metrics every script reports."""
 
+import os
+
 import numpy as np
 import torch
+from safetensors.torch import load_file
 
+from tiny_doom_defender.configuration_doom import DoomConvStemConfig
 from tiny_doom_defender.modeling_doom import DoomConvStemPolicy
 from tiny_doom_defender.utils import check_pipeline_config
+
+INT8_SCHEME = "int8-symmetric"  # config.json "quantization" value written by quantize_int8
+SCALE_SUFFIX = "::scale"
 
 # =============================================================================
 # Loading a checkpoint
@@ -16,13 +23,40 @@ def build_policy(ckpt, device):
     """Load a checkpoint dir into a ready-to-score policy, in eval mode.
 
     Works on either checkpoint kind: a PPO snapshot loads fully; an SFT checkpoint
-    is missing value_head, which from_pretrained leaves at its fresh init (eval
-    never reads it).
+    is missing value_head, which is left at its fresh init (eval never reads it).
+    config.json declares whether the weights are quantized.
     """
-    policy = DoomConvStemPolicy.from_pretrained(ckpt)
+    cfg = DoomConvStemConfig.from_pretrained(ckpt)
+    if cfg.quantization is None:
+        policy = DoomConvStemPolicy.from_pretrained(ckpt)
+    elif cfg.quantization == INT8_SCHEME:
+        policy = _load_int8_policy(ckpt, cfg)
+    else:
+        raise ValueError(f"Unknown quantization scheme {cfg.quantization!r} in {ckpt}")
     check_pipeline_config(policy.config)
     policy.to(device)
     policy.eval()
+    return policy
+
+
+def _load_int8_policy(ckpt, cfg):
+    """Dequantize an int8 checkpoint (see scripts/quantize_int8.py) back to an fp32 policy."""
+    packed = load_file(os.path.join(ckpt, "model_int8.safetensors"))
+    sd = {}
+    for k, v in packed.items():
+        if k.endswith(SCALE_SUFFIX):
+            continue
+        if v.dtype != torch.int8:
+            sd[k] = v
+        elif k + SCALE_SUFFIX not in packed:
+            raise ValueError(f"int8 tensor {k!r} has no {SCALE_SUFFIX} entry in {ckpt}")
+        else:
+            sd[k] = v.float() * packed[k + SCALE_SUFFIX]
+    policy = DoomConvStemPolicy(cfg)
+    missing, unexpected = policy.load_state_dict(sd, strict=False)
+    # A quantized SFT checkpoint legitimately lacks value_head; anything else is corrupt.
+    if unexpected or any(not k.startswith("value_head.") for k in missing):
+        raise ValueError(f"Bad int8 checkpoint {ckpt}: missing={missing}, unexpected={unexpected}")
     return policy
 
 

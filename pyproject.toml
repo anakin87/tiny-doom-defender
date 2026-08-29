@@ -20,6 +20,7 @@ train-sft = "tiny_doom_defender.scripts.train_sft:main"
 train-ppo = "tiny_doom_defender.scripts.train_ppo:main"
 select-ppo-snapshots = "tiny_doom_defender.scripts.select_ppo_snapshots:main"
 eval-model = "tiny_doom_defender.scripts.eval_model:main"
+quantize-int8 = "tiny_doom_defender.scripts.quantize_int8:main"
 play-doom = "tiny_doom_defender.scripts.play_doom_visual:main"
 
 [build-system]
