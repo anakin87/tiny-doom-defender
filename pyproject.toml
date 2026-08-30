@@ -5,10 +5,11 @@ description = "1.1M ModernBERT encoder playing DOOM in real-time in CPU"
 requires-python = ">=3.10"
 dependencies = [
     "torch",
-    "transformers",
+    "transformers>=5",
     "numpy",
     "Pillow",
-    "datasets",
+    "safetensors",
+    "huggingface_hub",
     "vizdoom",
     "gymnasium",
 ]
