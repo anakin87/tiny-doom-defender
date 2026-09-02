@@ -28,7 +28,9 @@ Then another idea: I bet I can improve the model. :-)
 
 This sounded like a fun project, to experiment with SFT + Reinforcement Learning.
 
-I changed the architecture, added PPO on top of SFT, and got a stronger Doom player.
+I changed the architecture, added PPO on top of SFT, and got a smaller, faster and stronger Doom player.
+
+💾 Can even fit a floppy with int8 quantization.
 
 If I've made you curious, [read the article](https://huggingface.co/spaces/anakin87/tiny-doom-defender).
 
@@ -77,7 +79,7 @@ To customize this repo, see the section below.
 | The game | `game.py` | Low-level VizDoom access: start the scenario and shrink the game screen down to the model's input resolution |
 | The game | `env.py` | Gymnasium environment on top of `game.py`: the policy sees the last few frames (plus its previous action) as one flat byte array |
 | The model | `configuration_doom.py` | Hugging Face-style configuration: conv stem dimensions + nested ModernBERT settings, saved with every checkpoint |
-| The model | `modeling_doom.py` | The model itself: a small convolutional "eye" feeding a ModernBERT trunk, with two heads on top — a classifier for SFT and a policy for RL |
+| The model | `modeling_doom.py` | The model itself. A small convolutional "eye" feeding a ModernBERT trunk, with two heads on top: a classifier for SFT and a policy for RL |
 | Training and evaluation | `data.py` | PyTorch dataset for SFT: reads the recorded oracle games and builds one 3-frame stack per training example |
 | Training and evaluation | `evaluation.py` | Shared evaluation code: load a checkpoint, play full episodes, compute the metrics |
 | Support | `constants.py` | Shared constants: frame resolution, action space, VizDoom settings, seeds |
@@ -87,11 +89,11 @@ To customize this repo, see the section below.
 
 | Command | What it does |
 |---|---|
-| `create-model` | Create a fresh untrained model folder — only needed to experiment with a non-default architecture |
+| `create-model` | Create a fresh untrained model folder. Only needed to experiment with a non-default architecture |
 | `record-oracle` | Let the scripted oracle play and record its games; this becomes the SFT training data |
 | `train-sft` | Supervised fine-tuning: train the model to imitate the oracle's actions |
 | `train-ppo` | Refine the SFT model with PPO (reinforcement learning), saving a snapshot after every iteration |
 | `select-ppo-snapshots` | Evaluate a PPO run's snapshots and keep the best one as `policy_best` |
-| `quantize-int8` | Shrink a checkpoint to int8 — small enough that model + code fit on a floppy disk |
+| `quantize-int8` | Shrink a checkpoint to int8, small enough that model + code fit on a floppy disk |
 | `eval-model` | Measure a checkpoint's performance on held-out test seeds |
 | `play-doom` | Watch a checkpoint play in a live DOOM window |
