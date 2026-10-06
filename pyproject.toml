@@ -12,6 +12,7 @@ dependencies = [
     "huggingface_hub",
     "vizdoom",
     "gymnasium",
+    "pygame>=2.6",
 ]
 
 [project.scripts]
